@@ -3,6 +3,9 @@
 Time tracking for teams: Super Admin, Project Manager and Worker roles, with time math that stays
 correct across devices, timezones and clock skew. Full spec: [PROJECT_SPEC.md](PROJECT_SPEC.md).
 
+**Want to try it?** Follow [Run it locally](#run-it-locally): about five minutes, with demo
+accounts ready to sign in.
+
 ## Architecture
 
 ```mermaid
@@ -68,27 +71,120 @@ A PM can't edit a worker's entries; they can only return the week with a comment
 rules per endpoint are in [Permissions](#permissions); the web app's menu and route guards follow
 the same role lists (`apps/web/src/router/navigation.ts`).
 
-## Requirements
+## Run it locally
 
-- Node.js 24 (`nvm use` reads `.nvmrc`). The api runs TypeScript directly via Node's built-in type
-  stripping, so there is no api build step.
-- Docker with Compose, for PostgreSQL 16.
+Five steps: install the tools, get the code, start PostgreSQL, create the tables with demo data,
+and start the app. It takes about five minutes.
 
-## Setup
+### 1. Install the tools
+
+- **Node.js 24.** With [nvm](https://github.com/nvm-sh/nvm), run `nvm install` in the project
+  folder (it reads `.nvmrc`). Check with `node -v`, which should print `v24.x`.
+- **PostgreSQL 16 or newer**, either:
+  - **Docker** with Compose (easiest: one command starts a ready database), or
+  - a **PostgreSQL you install yourself** (see 2b).
+- **Git**, to clone the repository.
+
+### 2. Get the code and install dependencies
 
 ```bash
-npm install                                  # also installs the Husky pre-commit hook
-cp apps/api/.env.example apps/api/.env
-cp apps/web/.env.example apps/web/.env
-npm run db:up && npm run db:deploy          # start Postgres, apply migrations
-npm run db:seed                              # demo data (wipes the dev database)
-npm run dev                                  # Postgres + api + web
+git clone https://github.com/gorvardanyan1/G-Track.git
+cd G-Track
+npm install                                   # all workspaces; also generates the Prisma client
+cp apps/api/.env.example apps/api/.env        # api settings (dev defaults work as they are)
+cp apps/web/.env.example apps/web/.env        # web settings (dev defaults work as they are)
 ```
 
-- Web: http://localhost:5173 (Vite proxies `/api` to the api)
-- Api: http://localhost:3000/api/v1/health
+### 3a. Start the database with Docker (recommended)
 
-`npm run dev -- --no-db` skips Docker if you run Postgres yourself.
+```bash
+npm run db:up        # Postgres 16 on localhost:5433 (user/password/db: tempo/tempo/tempo)
+```
+
+`apps/api/.env` already points at it, so there's nothing else to configure.
+
+### 3b. …or use a PostgreSQL you installed yourself
+
+Create a user and a database once, for example with `sudo -u postgres psql`:
+
+```sql
+CREATE ROLE tempo LOGIN PASSWORD 'tempo' CREATEDB;
+CREATE DATABASE tempo OWNER tempo;
+CREATE DATABASE tempo_test OWNER tempo;  -- only needed to run the tests
+```
+
+Then point the api at it in `apps/api/.env` (usually port 5432):
+
+```bash
+DATABASE_URL=postgresql://tempo:tempo@localhost:5432/tempo
+TEST_DATABASE_URL=postgresql://tempo:tempo@localhost:5432/tempo_test
+```
+
+`CREATEDB` lets the end-to-end test runners create their own throwaway databases. The schema
+needs the `btree_gist` extension, which ships with PostgreSQL and which a database owner may
+enable.
+
+### 4. Create the tables and the demo data
+
+```bash
+npm run db:deploy    # applies the migrations (tables, constraints, triggers)
+npm run db:seed      # demo organization; run it again any time to reset (it wipes the data)
+```
+
+### 5. Start the app
+
+```bash
+npm run dev            # with Docker: starts Postgres too, then the api and the web app
+npm run dev -- --no-db # with your own PostgreSQL (3b): skips Docker
+```
+
+Open **http://localhost:5173** and sign in with a demo account. Every password is
+**`TempoDev!2026`**.
+
+| To try…                         | Sign in as                 |
+| ------------------------------- | -------------------------- |
+| tracking time (worker)          | `lena.fischer@tempo.test`  |
+| dashboards, approvals, reports  | `petra.neumann@tempo.test` |
+| users, clients, settings, audit | `admin@tempo.test`         |
+
+- **Admin 2FA:** the admin's first sign-in asks you to set up two-factor authentication. Add the
+  key it shows to any authenticator app (Google Authenticator, 1Password, Authy…) and enter the
+  6-digit code.
+- **Emails:** invite and password-reset emails aren't sent in development. They're saved as JSON
+  files in `apps/api/.outbox/`; open the newest one and copy the link.
+- **Where things run:**
+  - web app: http://localhost:5173
+  - api health check: http://localhost:3000/api/v1/health
+  - the web app forwards `/api` (and the live-update WebSocket) to the api, so you only ever
+    open port 5173.
+
+### Run the checks and tests
+
+```bash
+npm run check          # lint, formatting, types, unit + api tests
+npm run test:e2e       # Playwright end-to-end tests
+npm run test:cypress   # Cypress component + end-to-end tests
+```
+
+- **Test database:**
+  - With Docker, start it first with `npm run db:test:up` (port 5434).
+  - With your own PostgreSQL, set `TEST_DATABASE_URL` as in 3b, plus `E2E_DATABASE_URL`, for
+    example `postgresql://tempo:tempo@localhost:5432/tempo_e2e`.
+- **Browsers:** install them once with `npx playwright install chromium` and
+  `npx cypress install`.
+
+### When something doesn't work
+
+| Problem                                     | Fix                                                                                                    |
+| ------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `docker: command not found`                 | Install Docker Desktop, or use your own PostgreSQL (3b) with `npm run dev -- --no-db`.                 |
+| `Can't reach database server`               | Postgres isn't running, or `DATABASE_URL` in `apps/api/.env` has the wrong port or password.           |
+| `Port 5173` / `3000` already in use         | Stop the other process, or change `PORT` in `apps/api/.env` and `API_PROXY_TARGET` in `apps/web/.env`. |
+| Login says "too many attempts"              | Login is rate limited. Wait 15 minutes, or restart the api (the limits live in memory).                |
+| The admin's 2FA code is refused             | Your computer's clock must be right (codes change every 30 s); each code works only once.              |
+| Lost the admin's authenticator              | `npm run db:seed` resets everything, including 2FA.                                                    |
+| Cypress won't start from a VS Code terminal | Use `npm run test:cypress` (it unsets `ELECTRON_RUN_AS_NODE`), not `npx cypress` directly.             |
+| `node: bad option` or type errors at start  | You're on an older Node.js; switch to Node 24 (`nvm use`).                                             |
 
 ## Databases
 
@@ -135,6 +231,43 @@ The Prisma pg adapter is only correct when the Postgres session time zone is UTC
 (`npm run db:test:up`); they drop and recreate that database's schema, so its name must end in
 `_test`. `npm run test:unit` runs everything that doesn't need a database.
 
+**Property tests** (`packages/shared/test/properties`) run the time maths over hundreds of
+seeded random cases (reproducible; pass another seed to explore):
+
+- splitting at local midnight in 12 tricky zones, including Lord Howe (30-minute DST), Kathmandu
+  (+05:45), Chatham, St John's and Havana (DST at midnight);
+- every 15-minute slot around each 2026 DST change: skipped times are refused, repeated times
+  offer both instants, and everything else round-trips;
+- rounding laws (a multiple of the step, within one step, idempotent, monotonic);
+- reports: every breakdown adds up to the same totals, and each entry is rounded and priced once.
+
+The api also has fuzz tests: CSV round trips with formula injection blocked, and JWTs that
+reject any tampered character.
+
+**Cypress** (`apps/web/cypress`) has two suites:
+
+- `npm run test:cypress:component` mounts components in Chrome: the select, modal, 2FA input,
+  tables, budget bar, live "working now" list and more.
+- `npm run test:cypress:e2e` runs whole flows: sign-in and 2FA, password reset, role pages, the
+  timer and shortcuts, manual entries with DST and overlaps, timesheets and approvals, PM
+  dashboards and reports with exports, user administration, clients and settings, the audit log,
+  themes, the phone drawer, the timezone banner and the server-clock offset.
+- `npm run test:cypress` runs both.
+
+How the end-to-end suite stays isolated and repeatable (`scripts/cypress.mjs`):
+
+- It migrates and seeds its own `tempo_cypress_e2e` database on the test Postgres. Override it
+  with `E2E_DATABASE_URL`; the name must end in `_e2e`.
+- It starts its own api (port 3200) and web app (port 5274).
+- Each test signs in as a fresh user cloned from a seeded one, and creates its data through the api,
+  so expected totals are exact and tests don't share state.
+- Each test also poses as its own client IP. The test api trusts one proxy hop, as in
+  production, so per-IP login limits apply per test.
+
+Cypress runs in Chrome; set `CYPRESS_BROWSER` to change that. Install the Cypress binary once
+with `npx cypress install`. In VS Code terminals the runner unsets `ELECTRON_RUN_AS_NODE`, which
+otherwise stops Cypress from starting.
+
 **End-to-end** (`npm run test:e2e`, Playwright, in `e2e/`):
 
 - It starts its own api (port 3100) and web app (port 5174) against `E2E_DATABASE_URL`. The default
@@ -162,17 +295,18 @@ without a build.
 
 ## Scripts (from the repo root)
 
-| Command             | What it does                                  |
-| ------------------- | --------------------------------------------- |
-| `npm run dev`       | Postgres, api (watch mode) and web dev server |
-| `npm run lint`      | ESLint (type-aware) across all workspaces     |
-| `npm run format`    | Prettier write (`format:check` to verify)     |
-| `npm run typecheck` | `tsc` / `vue-tsc` in every workspace          |
-| `npm test`          | Vitest in every workspace (needs the test DB) |
-| `npm run test:e2e`  | Playwright end-to-end tests (own api + web)   |
-| `npm run db:seed`   | Reset the dev database to demo data           |
-| `npm run check`     | All of the above, as CI would run them        |
-| `npm run build`     | Production build of the web app               |
+| Command                | What it does                                  |
+| ---------------------- | --------------------------------------------- |
+| `npm run dev`          | Postgres, api (watch mode) and web dev server |
+| `npm run lint`         | ESLint (type-aware) across all workspaces     |
+| `npm run format`       | Prettier write (`format:check` to verify)     |
+| `npm run typecheck`    | `tsc` / `vue-tsc` in every workspace          |
+| `npm test`             | Vitest in every workspace (needs the test DB) |
+| `npm run test:e2e`     | Playwright end-to-end tests (own api + web)   |
+| `npm run test:cypress` | Cypress component + end-to-end suites         |
+| `npm run db:seed`      | Reset the dev database to demo data           |
+| `npm run check`        | All of the above, as CI would run them        |
+| `npm run build`        | Production build of the web app               |
 
 The pre-commit hook runs lint, format check and typecheck.
 
@@ -337,13 +471,17 @@ Time is the core of the product, so the rules are strict and live in one place
 
 ## Continuous integration
 
-`.github/workflows/ci.yml` runs on pushes to `main` and on pull requests:
+A GitHub Actions workflow (`.github/workflows/ci.yml`) is designed with three jobs:
 
 - **check:** lint, Prettier check and typecheck, then unit + api integration tests against a
   Postgres 16 service container, then `npm audit` of the runtime dependencies.
-- **e2e:** the Playwright suite against its own Postgres service. On failure, the report and
+- **e2e:** the end-to-end suites against their own Postgres service. On failure, the reports and
   traces are uploaded.
 - **docker:** builds the production images.
+
+The workflow file isn't in the repository yet. GitHub only accepts a pushed workflow file from a
+login with the `workflow` permission (for example after `gh auth refresh -s workflow`). Until it's
+added, run `npm run check` and the end-to-end commands locally.
 
 ## Deployment (Docker)
 

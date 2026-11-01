@@ -1,18 +1,5 @@
 import { defineConfig, devices } from '@playwright/test';
-import { E2E, WEB_URL } from './support/env.ts';
-
-const apiEnv = {
-  NODE_ENV: 'test',
-  LOG_LEVEL: 'warn',
-  PORT: String(E2E.apiPort),
-  DATABASE_URL: E2E.databaseUrl,
-  CORS_ORIGINS: WEB_URL,
-  WEB_APP_URL: WEB_URL,
-  MAIL_OUTBOX_DIR: E2E.outboxDir,
-  // Throwaway keys for the e2e api only.
-  JWT_SECRET: 'e2e-only-jwt-secret-that-is-long-enough-123',
-  TOTP_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString('base64'),
-};
+import { apiEnv, E2E, WEB_URL } from './support/env.ts';
 
 /**
  * One worker: the tests share one api (rate limits, the seeded organization) and each uses its
@@ -52,7 +39,7 @@ export default defineConfig({
     {
       command: 'node src/server.ts',
       cwd: '../apps/api',
-      env: apiEnv,
+      env: apiEnv(),
       url: `http://localhost:${E2E.apiPort}/api/v1/health`,
       reuseExistingServer: false,
       timeout: 60_000,

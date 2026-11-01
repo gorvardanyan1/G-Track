@@ -40,6 +40,7 @@ async function signOut(): Promise<void> {
       class="flex items-center gap-2 rounded-full p-0.5 pr-0.5 transition-colors hover:bg-surface-2 sm:pr-2"
       :aria-expanded="open"
       aria-haspopup="menu"
+      :aria-label="`Account menu for ${auth.user.name}`"
       @click="open = !open"
       @keydown.esc="open = false"
     >

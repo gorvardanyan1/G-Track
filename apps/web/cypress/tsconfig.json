@@ -1,0 +1,12 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "tsBuildInfoFile": "../node_modules/.tmp/tsconfig.cypress.tsbuildinfo",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "types": ["cypress", "node", "vite/client"]
+  },
+  "include": ["**/*.ts", "../src/**/*.vue", "../src/**/*.ts", "../cypress.config.ts"]
+}

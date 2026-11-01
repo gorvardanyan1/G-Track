@@ -16,3 +16,7 @@ test-results/
 playwright-report/
 e2e/test-results/
 e2e/playwright-report/
+apps/web/cypress/.outbox/
+apps/web/cypress/downloads/
+apps/web/cypress/screenshots/
+apps/web/cypress/videos/
