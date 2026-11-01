@@ -8,3 +8,6 @@ apps/api/src/generated
 test-results
 playwright-report
 e2e/.outbox
+apps/web/cypress/.outbox
+apps/web/cypress/downloads
+apps/web/cypress/screenshots

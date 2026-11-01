@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, onBeforeUnmount, ref } from 'vue';
 import { navigationFor } from '../../router/navigation.ts';
 import { useAuthStore } from '../../stores/auth.ts';
 import { useThemeStore, type ThemePreference } from '../../stores/theme.ts';
@@ -14,6 +14,17 @@ const ui = useUiStore();
 const theme = useThemeStore();
 const timer = useTimerStore();
 const sections = computed(() => (auth.role ? navigationFor(auth.role) : []));
+
+/**
+ * Below the desktop breakpoint the sidebar is an off-canvas drawer: while it's closed it must
+ * not be reachable with Tab or a screen reader, so it's inert.
+ */
+const desktopQuery =
+  typeof window === 'undefined' ? null : window.matchMedia('(min-width: 1024px)');
+const desktop = ref(desktopQuery?.matches ?? true);
+const onMedia = (event: MediaQueryListEvent) => (desktop.value = event.matches);
+desktopQuery?.addEventListener('change', onMedia);
+onBeforeUnmount(() => desktopQuery?.removeEventListener('change', onMedia));
 const themes: { value: ThemePreference; icon: IconName; label: string }[] = [
   { value: 'light', icon: 'sun', label: 'Light' },
   { value: 'dark', icon: 'moon', label: 'Dark' },
@@ -36,6 +47,7 @@ const themes: { value: ThemePreference; icon: IconName; label: string }[] = [
       ui.mobileNavOpen ? 'w-[264px] translate-x-0' : 'w-[264px] -translate-x-full',
     ]"
     aria-label="Main navigation"
+    :inert="!desktop && !ui.mobileNavOpen"
   >
     <div
       class="flex h-16 items-center px-5"
@@ -101,6 +113,7 @@ const themes: { value: ThemePreference; icon: IconName; label: string }[] = [
           type="button"
           role="radio"
           :aria-checked="theme.preference === t.value"
+          :aria-label="t.label"
           :title="t.label"
           class="flex h-7 flex-1 items-center justify-center rounded-lg transition-all"
           :class="

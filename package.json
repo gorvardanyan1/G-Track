@@ -28,12 +28,16 @@
     "check": "npm run lint && npm run format:check && npm run typecheck && npm run test",
     "prepare": "husky",
     "test:unit": "npm run test:unit -w @tempo/api && npm run test -w @tempo/shared -w @tempo/web",
-    "test:e2e": "playwright test -c e2e"
+    "test:e2e": "playwright test -c e2e",
+    "test:cypress": "node scripts/cypress.mjs all",
+    "test:cypress:component": "node scripts/cypress.mjs component",
+    "test:cypress:e2e": "node scripts/cypress.mjs e2e"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@playwright/test": "^1.64.1",
     "@types/node": "^24.19.2",
+    "cypress": "^16.2.0",
     "eslint": "^10.14.0",
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-vue": "^10.12.0",
@@ -46,6 +50,7 @@
   },
   "allowScripts": {
     "@prisma/engines@7.10.1": true,
-    "prisma@7.10.1": true
+    "prisma@7.10.1": true,
+    "cypress@16.2.0": true
   }
 }

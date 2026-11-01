@@ -57,6 +57,15 @@ export default defineConfig(
     },
   },
   {
+    // Cypress: chai's property assertions (`.to.be.ok`) read as bare expressions, and command
+    // chains are thenables but not promises, so these two type-aware rules don't apply.
+    files: ['apps/web/cypress/**/*.ts', 'apps/web/cypress.config.ts'],
+    rules: {
+      '@typescript-eslint/no-unused-expressions': 'off',
+      '@typescript-eslint/no-misused-promises': 'off',
+    },
+  },
+  {
     files: ['scripts/**'],
     rules: { 'no-console': 'off' },
   },
