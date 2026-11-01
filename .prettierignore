@@ -1,0 +1,10 @@
+node_modules
+dist
+coverage
+package-lock.json
+CLAUDE.md
+PROJECT_SPEC.md
+apps/api/src/generated
+test-results
+playwright-report
+e2e/.outbox

@@ -1,0 +1,56 @@
+# Production-style stack: Postgres, a one-off migration, the api and the web (nginx).
+# Secrets come from .env.production (never committed; see apps/api/.env.example):
+#   DATABASE_URL, JWT_SECRET, TOTP_ENCRYPTION_KEY, CORS_ORIGINS, WEB_APP_URL, POSTGRES_PASSWORD
+#   docker compose -f compose.prod.yaml --env-file .env.production up -d --build
+# Put TLS in front of the web service (a load balancer or another proxy); then raise
+# TRUST_PROXY by one per extra proxy hop.
+name: tempo-prod
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: tempo
+      POSTGRES_DB: tempo
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U tempo -d tempo']
+      interval: 5s
+      retries: 20
+
+  migrate:
+    build: { context: ., dockerfile: apps/api/Dockerfile, target: migrate }
+    env_file: .env.production
+    depends_on:
+      db: { condition: service_healthy }
+    restart: 'no'
+
+  api:
+    build: { context: ., dockerfile: apps/api/Dockerfile, target: runtime }
+    env_file: .env.production
+    environment:
+      NODE_ENV: production
+      # nginx (the web service) is one proxy hop: trust exactly that one for client IPs,
+      # so rate limits and the audit log see real addresses, not nginx's.
+      TRUST_PROXY: '1'
+    volumes:
+      - outbox:/var/lib/tempo/outbox
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    restart: unless-stopped
+
+  web:
+    build: { context: ., dockerfile: apps/web/Dockerfile }
+    environment:
+      API_UPSTREAM: api:3000
+    ports:
+      - '8080:8080'
+    depends_on:
+      api: { condition: service_healthy }
+    restart: unless-stopped
+
+volumes:
+  db-data:
+  outbox:

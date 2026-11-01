@@ -1,0 +1,84 @@
+@layer base {
+  html {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-sans);
+    font-feature-settings: 'cv11', 'ss01', 'ss03';
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+  body {
+    min-height: 100dvh;
+  }
+  ::selection {
+    background: var(--accent-soft);
+  }
+  :focus-visible {
+    outline: none;
+    box-shadow: var(--focus-ring);
+    border-radius: 8px;
+  }
+  /* Timers and durations: monospaced, tabular digits so they don't jump. */
+  .num {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: 'zero' 0;
+    letter-spacing: -0.01em;
+  }
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+  input[type='time']::-webkit-calendar-picker-indicator,
+  input[type='date']::-webkit-calendar-picker-indicator {
+    opacity: 0.5;
+  }
+  .dark input[type='time']::-webkit-calendar-picker-indicator,
+  .dark input[type='date']::-webkit-calendar-picker-indicator {
+    filter: invert(1);
+  }
+}
+
+@layer components {
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-card);
+    box-shadow: var(--shadow-card);
+  }
+  .field {
+    width: 100%;
+    height: 2.5rem;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    padding: 0 0.75rem;
+    font-size: 0.875rem;
+    color: var(--text);
+    transition:
+      border-color 150ms,
+      box-shadow 150ms;
+  }
+  .field::placeholder {
+    color: var(--text-faint);
+  }
+  .field:hover {
+    border-color: var(--border-strong);
+  }
+  .field:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: var(--focus-ring);
+  }
+  .field[aria-invalid='true'] {
+    border-color: var(--danger);
+  }
+  .field:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border-strong) transparent;
+  }
+}

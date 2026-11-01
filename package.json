@@ -1,0 +1,51 @@
+{
+  "name": "tempo",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.11.0"
+  },
+  "workspaces": [
+    "packages/shared",
+    "apps/api",
+    "apps/web"
+  ],
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "build": "npm run build -w @tempo/web",
+    "db:up": "docker compose up -d --wait db",
+    "db:test:up": "docker compose up -d --wait db-test",
+    "db:down": "docker compose down",
+    "db:migrate": "npm run db:migrate -w @tempo/api",
+    "db:deploy": "npm run db:deploy -w @tempo/api",
+    "db:seed": "npm run db:seed -w @tempo/api",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "typecheck": "npm run typecheck --workspaces && tsc -p e2e",
+    "test": "npm run test --workspaces --if-present",
+    "check": "npm run lint && npm run format:check && npm run typecheck && npm run test",
+    "prepare": "husky",
+    "test:unit": "npm run test:unit -w @tempo/api && npm run test -w @tempo/shared -w @tempo/web",
+    "test:e2e": "playwright test -c e2e"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@playwright/test": "^1.64.1",
+    "@types/node": "^24.19.2",
+    "eslint": "^10.14.0",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-vue": "^10.12.0",
+    "globals": "^17.13.0",
+    "husky": "^9.1.7",
+    "prettier": "^3.9.10",
+    "typescript": "~6.0.3",
+    "typescript-eslint": "^8.72.1",
+    "vitest": "^5.0.5"
+  },
+  "allowScripts": {
+    "@prisma/engines@7.10.1": true,
+    "prisma@7.10.1": true
+  }
+}

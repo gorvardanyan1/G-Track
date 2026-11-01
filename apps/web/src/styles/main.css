@@ -1,0 +1,34 @@
+@import 'tailwindcss';
+@import './tokens.css';
+@import './base.css';
+@import './motion.css';
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme inline {
+  --font-sans: 'Inter', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'SFMono-Regular', monospace;
+
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+  --color-line: var(--border);
+  --color-line-strong: var(--border-strong);
+  --color-ink: var(--text);
+  --color-muted: var(--text-muted);
+  --color-faint: var(--text-faint);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-soft: var(--accent-soft);
+  --color-accent-ink: var(--accent-text);
+  --color-running: var(--running);
+  --color-running-soft: var(--running-soft);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+
+  --shadow-card: var(--shadow-card);
+  --shadow-pop: var(--shadow-pop);
+}

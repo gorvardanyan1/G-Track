@@ -1,0 +1,329 @@
+// TEMPO database schema.
+//
+// Invariants Prisma can't express live in raw SQL in the migrations (see
+// prisma/migrations/*_constraints/migration.sql):
+//   - time_entries.duration_seconds is a GENERATED column (never write it)
+//   - one running entry per user (partial unique index)
+//   - no overlapping entries per user (btree_gist exclusion constraint)
+//   - CHECK constraints (ended_at > started_at, colors, settings ranges, ...)
+//   - audit_logs is append-only (trigger)
+//
+// All instants are timestamptz (UTC). Time entries use second precision so that
+// durations are exact integers.
+
+generator client {
+  provider            = "prisma-client"
+  output              = "../src/generated/prisma"
+  moduleFormat        = "esm"
+  importFileExtension = "ts"
+  runtime             = "nodejs"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum UserRole {
+  SUPER_ADMIN
+  PROJECT_MANAGER
+  WORKER
+
+  @@map("user_role")
+}
+
+enum ProjectRole {
+  PM
+  WORKER
+
+  @@map("project_role")
+}
+
+enum TimeEntrySource {
+  TIMER
+  MANUAL
+  AUTO_STOPPED
+
+  @@map("time_entry_source")
+}
+
+enum TimesheetStatus {
+  DRAFT
+  SUBMITTED
+  APPROVED
+  REJECTED
+
+  @@map("timesheet_status")
+}
+
+enum RoundingMode {
+  NEAREST
+  UP
+  DOWN
+
+  @@map("rounding_mode")
+}
+
+model User {
+  id                  String    @id @default(uuid(7)) @db.Uuid
+  /// Always stored lower-cased (CHECK constraint).
+  email               String    @unique
+  passwordHash        String    @map("password_hash")
+  name                String
+  role                UserRole  @default(WORKER)
+  /// IANA zone, e.g. "Asia/Yerevan". Validated in the service layer.
+  timezone            String
+  isActive            Boolean   @default(true) @map("is_active")
+  totpSecretEncrypted String?   @map("totp_secret_encrypted")
+  totpEnabledAt       DateTime? @map("totp_enabled_at") @db.Timestamptz(3)
+  /// Last accepted TOTP time step; a code is never accepted twice (replay protection).
+  totpLastUsedStep    Int?      @map("totp_last_used_step")
+  failedLoginCount    Int       @default(0) @map("failed_login_count")
+  lockedUntil         DateTime? @map("locked_until") @db.Timestamptz(3)
+  lastLoginAt         DateTime? @map("last_login_at") @db.Timestamptz(3)
+  createdAt           DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt           DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  refreshTokens      RefreshToken[]
+  recoveryCodes      RecoveryCode[]
+  passwordResets     PasswordReset[]
+  invitesSent        Invite[]        @relation("InvitedBy")
+  invitesAccepted    Invite[]        @relation("AcceptedUser")
+  memberships        ProjectMember[]
+  timeEntries        TimeEntry[]
+  timesheets         Timesheet[]     @relation("TimesheetOwner")
+  timesheetsReviewed Timesheet[]     @relation("TimesheetReviewer")
+  auditLogs          AuditLog[]
+  settingsUpdates    OrgSettings[]
+
+  @@map("users")
+}
+
+/// One row per issued refresh token. A login starts a new family; every refresh
+/// rotates within the family. Reuse of a rotated token revokes the whole family.
+model RefreshToken {
+  id           String    @id @default(uuid(7)) @db.Uuid
+  userId       String    @map("user_id") @db.Uuid
+  familyId     String    @map("family_id") @db.Uuid
+  /// SHA-256 of the token; the raw token is never stored.
+  tokenHash    String    @unique @map("token_hash")
+  expiresAt    DateTime  @map("expires_at") @db.Timestamptz(3)
+  revokedAt    DateTime? @map("revoked_at") @db.Timestamptz(3)
+  replacedById String?   @unique @map("replaced_by_id") @db.Uuid
+  ip           String?   @db.Inet
+  userAgent    String?   @map("user_agent")
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  user       User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  replacedBy RefreshToken? @relation("Rotation", fields: [replacedById], references: [id], onDelete: SetNull)
+  replaces   RefreshToken? @relation("Rotation")
+
+  @@index([userId])
+  @@index([familyId])
+  @@map("refresh_tokens")
+}
+
+model RecoveryCode {
+  id        String    @id @default(uuid(7)) @db.Uuid
+  userId    String    @map("user_id") @db.Uuid
+  codeHash  String    @map("code_hash")
+  usedAt    DateTime? @map("used_at") @db.Timestamptz(3)
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("recovery_codes")
+}
+
+model Invite {
+  id             String    @id @default(uuid(7)) @db.Uuid
+  email          String
+  role           UserRole
+  tokenHash      String    @unique @map("token_hash")
+  invitedById    String    @map("invited_by_id") @db.Uuid
+  expiresAt      DateTime  @map("expires_at") @db.Timestamptz(3)
+  acceptedAt     DateTime? @map("accepted_at") @db.Timestamptz(3)
+  acceptedUserId String?   @map("accepted_user_id") @db.Uuid
+  revokedAt      DateTime? @map("revoked_at") @db.Timestamptz(3)
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  invitedBy    User  @relation("InvitedBy", fields: [invitedById], references: [id], onDelete: Restrict)
+  acceptedUser User? @relation("AcceptedUser", fields: [acceptedUserId], references: [id], onDelete: SetNull)
+
+  @@index([email])
+  @@map("invites")
+}
+
+model PasswordReset {
+  id        String    @id @default(uuid(7)) @db.Uuid
+  userId    String    @map("user_id") @db.Uuid
+  tokenHash String    @unique @map("token_hash")
+  expiresAt DateTime  @map("expires_at") @db.Timestamptz(3)
+  usedAt    DateTime? @map("used_at") @db.Timestamptz(3)
+  ip        String?   @db.Inet
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("password_resets")
+}
+
+model Client {
+  id         String    @id @default(uuid(7)) @db.Uuid
+  name       String    @unique
+  archivedAt DateTime? @map("archived_at") @db.Timestamptz(3)
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt  DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  projects Project[]
+
+  @@map("clients")
+}
+
+model Project {
+  id          String    @id @default(uuid(7)) @db.Uuid
+  /// Null for internal projects.
+  clientId    String?   @map("client_id") @db.Uuid
+  name        String
+  /// Hex color "#RRGGBB" (CHECK constraint).
+  color       String
+  budgetHours Decimal?  @map("budget_hours") @db.Decimal(10, 2)
+  isBillable  Boolean   @default(true) @map("is_billable")
+  archivedAt  DateTime? @map("archived_at") @db.Timestamptz(3)
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  client      Client?         @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  members     ProjectMember[]
+  tasks       Task[]
+  timeEntries TimeEntry[]
+
+  @@unique([clientId, name])
+  @@map("projects")
+}
+
+model ProjectMember {
+  projectId     String      @map("project_id") @db.Uuid
+  userId        String      @map("user_id") @db.Uuid
+  roleInProject ProjectRole @map("role_in_project")
+  hourlyRate    Decimal?    @map("hourly_rate") @db.Decimal(10, 2)
+  createdAt     DateTime    @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([projectId, userId])
+  @@index([userId])
+  @@map("project_members")
+}
+
+model Task {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  projectId String   @map("project_id") @db.Uuid
+  name      String
+  isDone    Boolean  @default(false) @map("is_done")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  project     Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  timeEntries TimeEntry[]
+
+  @@unique([projectId, name])
+  /// Target of time_entries' composite FK: an entry's task must belong to its project.
+  @@unique([id, projectId])
+  @@map("tasks")
+}
+
+model TimeEntry {
+  id              String          @id @default(uuid(7)) @db.Uuid
+  userId          String          @map("user_id") @db.Uuid
+  projectId       String          @map("project_id") @db.Uuid
+  taskId          String?         @map("task_id") @db.Uuid
+  description     String          @default("")
+  startedAt       DateTime        @map("started_at") @db.Timestamptz(0)
+  /// Null while the timer is running.
+  endedAt         DateTime?       @map("ended_at") @db.Timestamptz(0)
+  /// GENERATED ALWAYS AS (ended_at - started_at) in seconds. Read-only: never set it.
+  /// The dbgenerated() default only mirrors the generation expression so Prisma sees no drift.
+  durationSeconds Int?            @default(dbgenerated("(EXTRACT(epoch FROM (ended_at - started_at)))::integer")) @map("duration_seconds")
+  isBillable      Boolean         @default(true) @map("is_billable")
+  source          TimeEntrySource
+  createdAt       DateTime        @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt       DateTime        @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Restrict)
+  project Project @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  task    Task?   @relation(fields: [taskId, projectId], references: [id, projectId], onDelete: Restrict)
+
+  @@index([userId, startedAt])
+  @@index([projectId, startedAt])
+  @@index([taskId])
+  @@map("time_entries")
+}
+
+model Timesheet {
+  id          String          @id @default(uuid(7)) @db.Uuid
+  userId      String          @map("user_id") @db.Uuid
+  /// First day of the week in the user's timezone (a calendar date, not an instant).
+  weekStart   DateTime        @map("week_start") @db.Date
+  status      TimesheetStatus @default(DRAFT)
+  submittedAt DateTime?       @map("submitted_at") @db.Timestamptz(3)
+  reviewerId  String?         @map("reviewer_id") @db.Uuid
+  reviewedAt  DateTime?       @map("reviewed_at") @db.Timestamptz(3)
+  comment     String?
+  createdAt   DateTime        @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime        @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  user     User  @relation("TimesheetOwner", fields: [userId], references: [id], onDelete: Restrict)
+  reviewer User? @relation("TimesheetReviewer", fields: [reviewerId], references: [id], onDelete: SetNull)
+
+  @@unique([userId, weekStart])
+  @@index([status])
+  @@map("timesheets")
+}
+
+/// Single row (id = 1, CHECK constraint).
+model OrgSettings {
+  id                       Int          @id @default(1) @db.SmallInt
+  name                     String
+  defaultTimezone          String       @map("default_timezone")
+  /// ISO weekday: 1 = Monday … 7 = Sunday.
+  weekStartDay             Int          @default(1) @map("week_start_day") @db.SmallInt
+  /// 0 disables rounding. Applied in reports/exports only, never to stored data.
+  roundingMinutes          Int          @default(0) @map("rounding_minutes") @db.SmallInt
+  roundingMode             RoundingMode @default(NEAREST) @map("rounding_mode")
+  maxTimerDurationSeconds  Int          @default(43200) @map("max_timer_duration_seconds")
+  timesheetApprovalEnabled Boolean      @default(true) @map("timesheet_approval_enabled")
+  /// Entries older than this many days are locked. Null disables locking.
+  lockAfterDays            Int?         @map("lock_after_days")
+  updatedAt                DateTime     @updatedAt @map("updated_at") @db.Timestamptz(3)
+  updatedById              String?      @map("updated_by_id") @db.Uuid
+
+  updatedBy User? @relation(fields: [updatedById], references: [id], onDelete: SetNull)
+
+  @@map("org_settings")
+}
+
+/// Append-only (UPDATE/DELETE blocked by trigger).
+model AuditLog {
+  id         String   @id @default(uuid(7)) @db.Uuid
+  /// Null for system actions (jobs) and failed logins of unknown users.
+  actorId    String?  @map("actor_id") @db.Uuid
+  action     String
+  targetType String?  @map("target_type")
+  targetId   String?  @map("target_id")
+  before     Json?
+  after      Json?
+  ip         String?  @db.Inet
+  userAgent  String?  @map("user_agent")
+  requestId  String?  @map("request_id")
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  actor User? @relation(fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([createdAt])
+  @@index([actorId, createdAt])
+  @@index([targetType, targetId])
+  @@map("audit_logs")
+}

@@ -1,0 +1,14 @@
+# Build context is the repo root; keep it small and free of secrets.
+**/node_modules
+**/dist
+**/coverage
+**/.env
+**/.env.*
+!**/.env.example
+**/*.log
+.git
+.github
+.husky
+apps/api/src/generated
+apps/api/.outbox
+e2e
