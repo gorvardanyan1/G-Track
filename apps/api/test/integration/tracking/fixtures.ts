@@ -1,3 +1,4 @@
+import { addDays, startOfLocalDay } from '@tempo/shared';
 import { prisma } from '../auth/harness.ts';
 
 export async function setTimezone(userId: string, timezone: string): Promise<void> {
@@ -19,16 +20,41 @@ export async function setOrgSettings(data: {
   });
 }
 
+/**
+ * A timesheet in a given state, like the api leaves it: the period fixed in the owner's
+ * timezone, and one whole-week review part with the matching status.
+ */
 export async function setTimesheet(
   userId: string,
   weekStart: string,
   status: 'DRAFT' | 'SUBMITTED' | 'APPROVED' | 'REJECTED',
 ) {
-  await prisma().timesheet.upsert({
+  const { timezone } = await prisma().user.findUniqueOrThrow({ where: { id: userId } });
+  const fixed =
+    status === 'DRAFT'
+      ? {}
+      : {
+          timezone,
+          periodStart: startOfLocalDay(weekStart, timezone),
+          periodEnd: startOfLocalDay(addDays(weekStart, 7), timezone),
+        };
+  const sheet = await prisma().timesheet.upsert({
     where: { userId_weekStart: { userId, weekStart: new Date(`${weekStart}T00:00:00Z`) } },
-    create: { userId, weekStart: new Date(`${weekStart}T00:00:00Z`), status },
-    update: { status },
+    create: { userId, weekStart: new Date(`${weekStart}T00:00:00Z`), status, ...fixed },
+    update: { status, ...fixed },
   });
+  await prisma().timesheetReview.deleteMany({ where: { timesheetId: sheet.id } });
+  if (status !== 'DRAFT') {
+    await prisma().timesheetReview.create({
+      data: {
+        timesheetId: sheet.id,
+        projectId: null,
+        seconds: 0,
+        status: status === 'SUBMITTED' ? 'PENDING' : status,
+      },
+    });
+  }
+  return sheet;
 }
 
 export async function insertEntry(data: {

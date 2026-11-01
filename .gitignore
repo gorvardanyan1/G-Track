@@ -20,3 +20,4 @@ apps/web/cypress/.outbox/
 apps/web/cypress/downloads/
 apps/web/cypress/screenshots/
 apps/web/cypress/videos/
+testUser.txt

@@ -8,5 +8,11 @@
     "moduleResolution": "Bundler",
     "types": ["cypress", "node", "vite/client"]
   },
-  "include": ["**/*.ts", "../src/**/*.vue", "../src/**/*.ts", "../cypress.config.ts"]
+  "include": [
+    "**/*.ts",
+    "../src/**/*.vue",
+    "../src/**/*.ts",
+    "../cypress.config.ts",
+    "../vite.config.ts"
+  ]
 }

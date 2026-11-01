@@ -86,12 +86,13 @@ model User {
   refreshTokens      RefreshToken[]
   recoveryCodes      RecoveryCode[]
   passwordResets     PasswordReset[]
-  invitesSent        Invite[]        @relation("InvitedBy")
-  invitesAccepted    Invite[]        @relation("AcceptedUser")
+  invitesSent        Invite[]          @relation("InvitedBy")
+  invitesAccepted    Invite[]          @relation("AcceptedUser")
   memberships        ProjectMember[]
   timeEntries        TimeEntry[]
-  timesheets         Timesheet[]     @relation("TimesheetOwner")
-  timesheetsReviewed Timesheet[]     @relation("TimesheetReviewer")
+  timesheets         Timesheet[]       @relation("TimesheetOwner")
+  timesheetsReviewed Timesheet[]       @relation("TimesheetReviewer")
+  timesheetReviews   TimesheetReview[] @relation("TimesheetReviewReviewer")
   auditLogs          AuditLog[]
   settingsUpdates    OrgSettings[]
 
@@ -194,10 +195,11 @@ model Project {
   createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  client      Client?         @relation(fields: [clientId], references: [id], onDelete: Restrict)
-  members     ProjectMember[]
-  tasks       Task[]
-  timeEntries TimeEntry[]
+  client           Client?           @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  members          ProjectMember[]
+  tasks            Task[]
+  timeEntries      TimeEntry[]
+  timesheetReviews TimesheetReview[]
 
   @@unique([clientId, name])
   @@map("projects")
@@ -248,6 +250,9 @@ model TimeEntry {
   /// The dbgenerated() default only mirrors the generation expression so Prisma sees no drift.
   durationSeconds Int?            @default(dbgenerated("(EXTRACT(epoch FROM (ended_at - started_at)))::integer")) @map("duration_seconds")
   isBillable      Boolean         @default(true) @map("is_billable")
+  /// The member's hourly rate on the project when the entry was saved (copied by a database
+  /// trigger), so a later rate change never rewrites past billing.
+  hourlyRate      Decimal?        @map("hourly_rate") @db.Decimal(10, 2)
   source          TimeEntrySource
   createdAt       DateTime        @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt       DateTime        @updatedAt @map("updated_at") @db.Timestamptz(3)
@@ -263,24 +268,65 @@ model TimeEntry {
 }
 
 model Timesheet {
-  id          String          @id @default(uuid(7)) @db.Uuid
-  userId      String          @map("user_id") @db.Uuid
+  id           String          @id @default(uuid(7)) @db.Uuid
+  userId       String          @map("user_id") @db.Uuid
   /// First day of the week in the user's timezone (a calendar date, not an instant).
-  weekStart   DateTime        @map("week_start") @db.Date
-  status      TimesheetStatus @default(DRAFT)
-  submittedAt DateTime?       @map("submitted_at") @db.Timestamptz(3)
-  reviewerId  String?         @map("reviewer_id") @db.Uuid
-  reviewedAt  DateTime?       @map("reviewed_at") @db.Timestamptz(3)
-  comment     String?
-  createdAt   DateTime        @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt   DateTime        @updatedAt @map("updated_at") @db.Timestamptz(3)
+  weekStart    DateTime        @map("week_start") @db.Date
+  status       TimesheetStatus @default(DRAFT)
+  submittedAt  DateTime?       @map("submitted_at") @db.Timestamptz(3)
+  reviewerId   String?         @map("reviewer_id") @db.Uuid
+  reviewedAt   DateTime?       @map("reviewed_at") @db.Timestamptz(3)
+  comment      String?
+  /// Fixed when the week is (re)submitted, so a later profile timezone change can't move hours
+  /// in or out of it: the owner's timezone then, and the week as UTC instants [start, end).
+  timezone     String?
+  periodStart  DateTime?       @map("period_start") @db.Timestamptz(3)
+  periodEnd    DateTime?       @map("period_end") @db.Timestamptz(3)
+  /// Tracked time when submitted; unchanged while the week is locked.
+  totalSeconds Int?            @map("total_seconds")
+  createdAt    DateTime        @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt    DateTime        @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  user     User  @relation("TimesheetOwner", fields: [userId], references: [id], onDelete: Restrict)
-  reviewer User? @relation("TimesheetReviewer", fields: [reviewerId], references: [id], onDelete: SetNull)
+  user     User              @relation("TimesheetOwner", fields: [userId], references: [id], onDelete: Restrict)
+  reviewer User?             @relation("TimesheetReviewer", fields: [reviewerId], references: [id], onDelete: SetNull)
+  reviews  TimesheetReview[]
 
   @@unique([userId, weekStart])
   @@index([status])
+  @@index([userId, periodStart])
   @@map("timesheets")
+}
+
+enum TimesheetReviewStatus {
+  PENDING
+  APPROVED
+  REJECTED
+
+  @@map("timesheet_review_status")
+}
+
+/// One project's part of a submitted week, approved by that project's PM (or a Super Admin).
+/// The week is approved when every part is; one returned part returns the whole week.
+/// projectId is null for a week with no tracked time (any of the worker's PMs may review it).
+model TimesheetReview {
+  id          String                @id @default(uuid(7)) @db.Uuid
+  timesheetId String                @map("timesheet_id") @db.Uuid
+  projectId   String?               @map("project_id") @db.Uuid
+  status      TimesheetReviewStatus @default(PENDING)
+  /// The project's time in the week when submitted.
+  seconds     Int
+  reviewerId  String?               @map("reviewer_id") @db.Uuid
+  reviewedAt  DateTime?             @map("reviewed_at") @db.Timestamptz(3)
+  comment     String?
+  createdAt   DateTime              @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  timesheet Timesheet @relation(fields: [timesheetId], references: [id], onDelete: Cascade)
+  project   Project?  @relation(fields: [projectId], references: [id], onDelete: Restrict)
+  reviewer  User?     @relation("TimesheetReviewReviewer", fields: [reviewerId], references: [id], onDelete: SetNull)
+
+  @@unique([timesheetId, projectId])
+  @@index([projectId, status])
+  @@map("timesheet_reviews")
 }
 
 /// Single row (id = 1, CHECK constraint).

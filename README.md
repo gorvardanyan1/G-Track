@@ -380,7 +380,8 @@ Time is the core of the product, so the rules are strict and live in one place
    its days, so every breakdown adds up to the same total. Stored data is never rounded.
 9. **Weeks follow the organization.** The week start day is an organization setting; each person's
    weeks begin on that day in their own timezone. Submitted or approved weeks, and entries older
-   than the lock period, can't be changed.
+   than the lock period, can't be changed. A submitted week keeps the UTC period it had when it
+   was submitted, so changing one's timezone later can't move time into or out of it.
 
 ## Time tracking
 
@@ -396,17 +397,29 @@ Time is the core of the product, so the rules are strict and live in one place
 
 ## Timesheets, reports and administration
 
-- **Timesheets** (`/timesheets`): a user submits the week containing a date (`POST /timesheets/submit`);
-  weeks start on the org week start day, in the owner's timezone. A submitted or approved week
-  is read-only for its entries and timer; a rejected week (rejection needs a comment) can be
-  edited and submitted again. Approved weeks stay read-only even if approval is later switched off.
-  A PM reviews the workers on projects they manage, and an admin reviews anyone. Nobody
-  reviews their own week. A PM sees time on other projects only as an unnamed total.
+- **Timesheets** (`/timesheets`): a user submits the week containing a date
+  (`POST /timesheets/submit`).
+  - Weeks start on the org week start day, in the owner's timezone.
+  - **Only finished weeks can be submitted**: submitting locks the whole week, so doing it early
+    would freeze the days still to come.
+  - **Submitting fixes the week:** its UTC period, the owner's timezone and the total are stored.
+    Locks use that period, so a later profile timezone change can't move time into or out of a
+    submitted or approved week. A person's locked weeks can never overlap (database exclusion),
+    even if the week start day changes.
+  - **Each project's PM approves their own part.** A submitted week has one part per project
+    with time (or one whole-week part for a week without time). The week is approved when every
+    part is; returning any part (a comment is required) returns the whole week, which can then
+    be edited and submitted again, with every part reviewed afresh. A Super Admin can decide
+    every part. Nobody reviews their own week.
+  - A PM sees other projects' time and parts only without names.
+  - Approved weeks stay read-only even if approval is later switched off.
 - **Reports** (`GET /reports`, `/reports/export.csv`, `/reports/export.pdf`): completed entries
   only, clipped to the range and split at local midnight in the **requesting** user's timezone.
   With `?round=true` the org rule is applied once per entry; the rounded time and the money are
-  shared across the entry's days so every breakdown adds up to the same total. Amounts are
-  billable time × the worker's hourly rate on the project, shown to admins and PMs only. Admins see
+  shared across the entry's days so every breakdown adds up to the same total. Each entry keeps
+  the hourly rate in force when it was tracked (copied by a database trigger), so changing a
+  member's rate only affects time tracked from then on and never rewrites past billing. Amounts are
+  billable time × the rate stored on each entry, shown to admins and PMs only. Admins see
   everything, PMs their projects, and workers their own time. The CSV has one row per entry per
   day, with formula injection neutralized. The PDF is generated without dependencies (standard
   Helvetica, so characters outside Latin-1 print as "?").

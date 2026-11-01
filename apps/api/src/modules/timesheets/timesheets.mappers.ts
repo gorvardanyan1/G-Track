@@ -28,12 +28,22 @@ export const toTimesheetSummary = (sheet: TimesheetWithPeople, totalSeconds: num
 
 export function toTimesheetResponse(d: TimesheetDetail): TimesheetResponse {
   return {
-    ...summary(d.user, d.week.weekStart, d.sheet, d.grid.totalSeconds),
+    ...summary(d.user, d.week.weekStart, d.sheet, d.totalSeconds),
     timezone: d.week.zone,
     dates: d.week.dates,
     projects: d.grid.projects,
     otherSeconds: d.grid.otherSeconds,
     dayTotals: d.grid.dayTotals,
     canReview: d.canReview,
+    reviews: d.reviews.map(({ review, visible, canReview }) => ({
+      project: visible ? review.project : null,
+      visible,
+      status: review.status,
+      seconds: review.seconds,
+      reviewer: visible ? review.reviewer : null,
+      reviewedAt: visible ? (review.reviewedAt?.toISOString() ?? null) : null,
+      comment: visible ? review.comment : null,
+      canReview,
+    })),
   };
 }

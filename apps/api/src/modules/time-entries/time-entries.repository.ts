@@ -98,17 +98,20 @@ export function createTimeEntriesRepository(prisma: PrismaClient) {
       (await prisma.projectMember.count({ where: { userId, projectId: { in: projectIds } } })) > 0,
 
     /** Week starts (YYYY-MM-DD) in [from, to] of the user's submitted or approved timesheets. */
-    async lockingWeekStarts(userId: string, from: string, to: string): Promise<string[]> {
-      const rows = await prisma.timesheet.findMany({
+    /**
+     * Submitted or approved weeks of the user overlapping [start, end), by their fixed UTC
+     * periods (not by dates in the user's current timezone, which they can change).
+     */
+    lockedPeriods: (userId: string, start: Date, end: Date) =>
+      prisma.timesheet.findMany({
         where: {
           userId,
-          weekStart: { gte: new Date(`${from}T00:00:00Z`), lte: new Date(`${to}T00:00:00Z`) },
           status: { in: ['SUBMITTED', 'APPROVED'] },
+          periodStart: { lt: end },
+          periodEnd: { gt: start },
         },
-        select: { weekStart: true },
-      });
-      return rows.map((r) => r.weekStart.toISOString().slice(0, 10));
-    },
+        select: { periodStart: true, periodEnd: true },
+      }),
 
     /**
      * Stops every timer running longer than `maxSeconds` at exactly start + max, in one

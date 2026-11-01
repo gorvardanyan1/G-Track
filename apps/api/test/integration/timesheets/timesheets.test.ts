@@ -147,30 +147,40 @@ describe('submitting', () => {
       weekStart: '2026-10-19',
       weekEnd: '2026-10-25',
       totalSeconds: 16_200,
+      projectIds: [s.projectA.id],
     });
   });
 
-  it('rejects resubmission, future weeks, and weeks with a running timer', async () => {
+  it('rejects resubmission, unfinished weeks, and weeks with a running timer', async () => {
     await submitted('workerA', '2026-10-19');
     expect(errorBody(await submit('workerA', '2026-10-25')).code).toBe('TIMESHEET_NOT_SUBMITTABLE');
     expect(errorBody(await submit('workerA', '2026-11-02')).code).toBe('TIMESHEET_NOT_SUBMITTABLE');
+    // The current week (Mon 26 Oct – Sun 1 Nov) isn't over on Saturday.
+    expect(errorBody(await submit('workerA', '2026-10-31'))).toMatchObject({
+      code: 'TIMESHEET_NOT_SUBMITTABLE',
+      message: 'This week isn’t over yet; submit it after 2026-11-01',
+    });
 
-    expect(
-      (await s.as('workerA').post('/timer/start').send({ projectId: s.projectA.id })).status,
-    ).toBe(201);
-    const running = await submit('workerA', '2026-10-31');
-    expect(errorBody(running)).toMatchObject({
+    // workerB left a timer running since last Sunday: that week can't be submitted yet.
+    await insertEntry({
+      userId: s.users.workerB.id,
+      projectId: s.projectB.id,
+      startedAt: '2026-10-25T20:00:00Z',
+      endedAt: null,
+      source: 'TIMER',
+    });
+    expect(errorBody(await submit('workerB', '2026-10-19'))).toMatchObject({
       code: 'TIMESHEET_NOT_SUBMITTABLE',
       message: 'Stop the running timer before submitting this week',
     });
-    await s.as('workerA').post('/timer/stop');
-    expect((await submit('workerA', '2026-10-31')).status).toBe(200);
+    await s.as('workerB').post('/timer/stop');
+    expect((await submit('workerB', '2026-10-19')).status).toBe(200);
   });
 
-  it('blocks starting a timer in a submitted current week', async () => {
-    await submitted('workerA', '2026-10-31');
+  it('the current week can’t be submitted, so tracking it goes on', async () => {
+    expect((await submit('workerA', '2026-10-31')).status).toBe(409);
     const res = await s.as('workerA').post('/timer/start').send({ projectId: s.projectA.id });
-    expect(errorBody(res).code).toBe('PERIOD_LOCKED');
+    expect(res.status).toBe(201);
   });
 
   it('is refused while timesheet approval is turned off', async () => {

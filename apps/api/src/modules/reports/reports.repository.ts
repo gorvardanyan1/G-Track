@@ -37,13 +37,6 @@ export function createReportsRepository(prisma: PrismaClient) {
         orderBy: [{ startedAt: 'asc' }, { id: 'asc' }],
       }),
 
-    /** Hourly rates per (project, user) for the given projects. */
-    rates: (projectIds: string[]) =>
-      prisma.projectMember.findMany({
-        where: { projectId: { in: projectIds }, hourlyRate: { not: null } },
-        select: { projectId: true, userId: true, hourlyRate: true },
-      }),
-
     findViewer: (id: string) =>
       prisma.user.findUnique({ where: { id }, select: { id: true, timezone: true } }),
 

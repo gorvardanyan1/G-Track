@@ -1,4 +1,5 @@
 import { defineConfig } from 'cypress';
+import { mergeConfig } from 'vite';
 import { createTasks } from './cypress/tasks.ts';
 
 /**
@@ -34,7 +35,16 @@ export default defineConfig({
   component: {
     // Component failures are clear from the command log; screenshots only slow them down.
     screenshotOnRunFailure: false,
-    devServer: { framework: 'vue', bundler: 'vite' },
+    devServer: {
+      framework: 'vue',
+      bundler: 'vite',
+      // The app's Vite config, but on any free port: 5173 may be in use by `npm run dev`.
+      viteConfig: async () => {
+        const { default: config } = await import('./vite.config.ts');
+        const base = config({ command: 'serve', mode: 'development' });
+        return mergeConfig(base, { server: { port: 0, strictPort: false } });
+      },
+    },
     specPattern: 'cypress/component/**/*.cy.ts',
     supportFile: 'cypress/support/component.ts',
     indexHtmlFile: 'cypress/support/component-index.html',

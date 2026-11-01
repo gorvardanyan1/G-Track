@@ -8,6 +8,7 @@ import {
 } from '@tempo/shared';
 import { ConflictError, ForbiddenError, NotFoundError } from '../../errors/app-error.ts';
 import type { Clock } from '../../lib/clock.ts';
+import { pgErrorCode } from '../../lib/prisma-errors.ts';
 import type { EventBus } from '../../lib/event-bus.ts';
 import type { RequestContext } from '../../lib/request-context.ts';
 import { AuditAction } from '../audit/audit-actions.ts';
@@ -70,11 +71,40 @@ export function createTimesheetsService({ timesheets, settings, audit, clock, ev
   }
 
   const canSee = (scope: Scope, userId: string) => scope.userIds?.has(userId) ?? true;
-  const canReview = (scope: Scope, auth: AuthContext, userId: string) =>
-    userId !== auth.userId && (scope.reviewable?.has(userId) ?? true);
   /** Owners see their whole week; PMs see their own projects by name. */
   const gridProjects = (scope: Scope, auth: AuthContext, userId: string) =>
     userId === auth.userId ? null : scope.projectIds;
+
+  /**
+   * Who decides one part of a week: a project's part by its PM (or a Super Admin); the
+   * whole-week part of a week without time by any of the owner's PMs (or a Super Admin).
+   * Never the owner.
+   */
+  function decidesPart(
+    scope: Scope,
+    auth: AuthContext,
+    ownerId: string,
+    part: { projectId: string | null },
+  ): boolean {
+    if (ownerId === auth.userId) return false;
+    if (scope.isAdmin) return true;
+    // PMs review the workers on their projects (the people they can see), …
+    if (!scope.reviewable?.has(ownerId)) return false;
+    // … and of each week only the parts of projects they manage.
+    return part.projectId === null || (scope.projectIds?.has(part.projectId) ?? false);
+  }
+  /** A project the viewer can't see stays anonymous (like everywhere else: no names leak). */
+  const seesPart = (scope: Scope, auth: AuthContext, ownerId: string, projectId: string | null) =>
+    ownerId === auth.userId ||
+    scope.isAdmin ||
+    projectId === null ||
+    (scope.projectIds?.has(projectId) ?? false);
+  const pendingFor = (scope: Scope, auth: AuthContext, sheet: TimesheetWithPeople) =>
+    sheet.status === 'SUBMITTED'
+      ? sheet.reviews.filter(
+          (r) => r.status === 'PENDING' && decidesPart(scope, auth, sheet.userId, r),
+        )
+      : [];
 
   async function owner(userId: string): Promise<Owner> {
     const user = await timesheets.findUser(userId);
@@ -89,6 +119,27 @@ export function createTimesheetsService({ timesheets, settings, audit, clock, ev
     return { sheet, scope };
   }
 
+  /**
+   * The week's window. A submitted or approved week uses the timezone and UTC period fixed at
+   * submission (a later profile change can't move time in or out); otherwise the owner's zone.
+   */
+  function windowOf(weekStart: string, user: Owner, sheet: TimesheetWithPeople | null) {
+    const locked = sheet?.status === 'SUBMITTED' || sheet?.status === 'APPROVED';
+    if (locked && sheet.timezone && sheet.periodStart && sheet.periodEnd) {
+      return {
+        ...weekWindow(weekStart, sheet.timezone),
+        start: sheet.periodStart,
+        end: sheet.periodEnd,
+      };
+    }
+    return weekWindow(weekStart, user.timezone);
+  }
+  /** Locked weeks show the total fixed at submission. */
+  const lockedTotal = (sheet: TimesheetWithPeople | null) =>
+    (sheet?.status === 'SUBMITTED' || sheet?.status === 'APPROVED') && sheet.totalSeconds !== null
+      ? sheet.totalSeconds
+      : null;
+
   async function detail(
     auth: AuthContext,
     user: Owner,
@@ -96,26 +147,25 @@ export function createTimesheetsService({ timesheets, settings, audit, clock, ev
     sheet: TimesheetWithPeople | null,
     scope: Scope,
   ) {
-    const week = weekWindow(weekStart, user.timezone);
+    const week = windowOf(weekStart, user, sheet);
     const entries = await timesheets.completedEntries([
       { userId: user.id, start: week.start, end: week.end },
     ]);
     const grid = buildWeekGrid(entries, week, gridProjects(scope, auth, user.id));
+    const decides = sheet ? new Set(pendingFor(scope, auth, sheet).map((r) => r.id)) : new Set();
     return {
       sheet,
       user,
       week,
       grid,
-      canReview: sheet?.status === 'SUBMITTED' && canReview(scope, auth, user.id),
+      totalSeconds: lockedTotal(sheet) ?? grid.totalSeconds,
+      reviews: (sheet?.reviews ?? []).map((r) => ({
+        review: r,
+        visible: seesPart(scope, auth, user.id, r.projectId),
+        canReview: decides.has(r.id),
+      })),
+      canReview: decides.size > 0,
     };
-  }
-
-  async function weekTotal(user: Owner, weekStart: string): Promise<number> {
-    const week = weekWindow(weekStart, user.timezone);
-    const entries = await timesheets.completedEntries([
-      { userId: user.id, start: week.start, end: week.end },
-    ]);
-    return buildWeekGrid(entries, week, null).totalSeconds;
   }
 
   async function review(
@@ -128,13 +178,46 @@ export function createTimesheetsService({ timesheets, settings, audit, clock, ev
     const { sheet, scope } = await loadVisible(auth, id);
     if (sheet.userId === auth.userId)
       throw new ForbiddenError('You can’t review your own timesheet');
-    if (!canReview(scope, auth, sheet.userId))
-      throw new ForbiddenError('Only a project manager or admin can review timesheets');
-    if (!(await timesheets.review(id, decision, auth.userId, comment, clock()))) {
-      throw new ConflictError('This timesheet is not awaiting approval', {
+    const notPending = () =>
+      new ConflictError('This timesheet is not awaiting approval', {
         code: ErrorCode.TIMESHEET_NOT_PENDING,
       });
+    if (sheet.status !== 'SUBMITTED') throw notPending();
+    const mine = pendingFor(scope, auth, sheet);
+    if (mine.length === 0) {
+      if (sheet.reviews.some((r) => r.status === 'PENDING'))
+        throw new ForbiddenError(
+          'Only the manager of each project (or an admin) can review its part of the week',
+        );
+      throw notPending();
     }
+
+    const at = clock();
+    const outcome = await timesheets.transaction(async (tx) => {
+      if ((await timesheets.lockSheet(tx, id)) !== 'SUBMITTED') return null;
+      const decided = await timesheets.decideParts(
+        tx,
+        mine.map((r) => r.id),
+        decision,
+        auth.userId,
+        comment,
+        at,
+      );
+      // Another reviewer decided some of these parts in the meantime.
+      if (decided !== mine.length) return null;
+      const statuses = await timesheets.partStatuses(tx, id);
+      const status =
+        decision === 'REJECTED'
+          ? ('REJECTED' as const)
+          : statuses.every((s) => s === 'APPROVED')
+            ? ('APPROVED' as const)
+            : ('SUBMITTED' as const);
+      if (status !== 'SUBMITTED')
+        await timesheets.setOutcome(tx, id, status, auth.userId, comment, at);
+      return status;
+    });
+    if (outcome === null) throw notPending();
+
     await audit.record(
       decision === 'APPROVED' ? AuditAction.TIMESHEET_APPROVED : AuditAction.TIMESHEET_REJECTED,
       {
@@ -143,7 +226,9 @@ export function createTimesheetsService({ timesheets, settings, audit, clock, ev
         targetId: id,
         before: { status: sheet.status },
         after: {
-          status: decision,
+          decision,
+          status: outcome,
+          projectIds: mine.map((r) => r.projectId),
           comment,
           userId: sheet.userId,
           weekStart: fromDbDate(sheet.weekStart),
@@ -171,7 +256,10 @@ export function createTimesheetsService({ timesheets, settings, audit, clock, ev
       return detail(auth, sheet.user, fromDbDate(sheet.weekStart), sheet, scope);
     },
 
-    /** Admins: everyone; PMs: their workers and themselves; workers: themselves. */
+    /**
+     * Admins: everyone; PMs: their workers and themselves; workers: themselves. With
+     * `reviewable` and status SUBMITTED: only weeks with a part waiting for this reviewer.
+     */
     async list(auth: AuthContext, query: ListTimesheetsQuery) {
       const scope = await scopeOf(auth);
       if (query.userId && !canSee(scope, query.userId)) throw new NotFoundError('User not found');
@@ -183,6 +271,7 @@ export function createTimesheetsService({ timesheets, settings, audit, clock, ev
         : visible
           ? [...visible]
           : undefined;
+      const waiting = query.reviewable && query.status === 'SUBMITTED';
       const { items, total } = await timesheets.list(
         {
           ...(userIds && { userIds }),
@@ -190,29 +279,42 @@ export function createTimesheetsService({ timesheets, settings, audit, clock, ev
           ...(query.status && { status: query.status }),
           ...(query.from && { from: query.from }),
           ...(query.to && { to: query.to }),
+          ...(waiting && {
+            pendingFor: scope.isAdmin
+              ? { projectIds: null, wholeWeekUserIds: null }
+              : {
+                  projectIds: [...(scope.projectIds ?? [])],
+                  wholeWeekUserIds: [...(scope.reviewable ?? [])],
+                },
+          }),
         },
         query.page,
         query.pageSize,
       );
       const withWeeks = items.map((sheet) => ({
         sheet,
-        week: weekWindow(fromDbDate(sheet.weekStart), sheet.user.timezone),
+        week: windowOf(fromDbDate(sheet.weekStart), sheet.user, sheet),
       }));
       const entries = await timesheets.completedEntries(
         withWeeks.map(({ sheet, week }) => ({ userId: sheet.userId, ...week })),
       );
       const rows = withWeeks.map(({ sheet, week }) => ({
         sheet,
-        totalSeconds: buildWeekGrid(
-          entries.filter((e) => e.userId === sheet.userId),
-          week,
-          null,
-        ).totalSeconds,
+        totalSeconds:
+          lockedTotal(sheet) ??
+          buildWeekGrid(
+            entries.filter((e) => e.userId === sheet.userId),
+            week,
+            null,
+          ).totalSeconds,
       }));
       return { rows, total };
     },
 
-    /** Locks the week for the owner until a reviewer rejects it. */
+    /**
+     * Locks a finished week for the owner until a reviewer returns it. The week's period, total
+     * and per-project parts are fixed now, in the owner's current timezone.
+     */
     async submit(auth: AuthContext, date: string, context: RequestContext) {
       const policy = await settings.getPolicy();
       if (!policy.timesheetApprovalEnabled) {
@@ -222,22 +324,53 @@ export function createTimesheetsService({ timesheets, settings, audit, clock, ev
       }
       const user = await owner(auth.userId);
       const weekStart = startOfWeekDate(date, policy.weekStartDay);
+      const weekEnd = addDays(weekStart, 6);
       const notSubmittable = (message: string) =>
         new ConflictError(message, { code: ErrorCode.TIMESHEET_NOT_SUBMITTABLE });
-      if (weekStart > todayInZone(user.timezone, clock()))
-        throw notSubmittable('This week hasn’t started yet');
+      // Submitting locks the whole week, so it must be over (else the rest of it is frozen).
+      if (weekEnd >= todayInZone(user.timezone, clock()))
+        throw notSubmittable(`This week isn’t over yet; submit it after ${weekEnd}`);
 
       const week = weekWindow(weekStart, user.timezone);
-      const sheet = await timesheets.transaction(async (tx) => {
-        await timesheets.lockUser(tx, user.id);
-        const existing = await timesheets.findByWeek(user.id, weekStart, tx);
-        if (existing?.status === 'SUBMITTED')
-          throw notSubmittable('This week is already submitted');
-        if (existing?.status === 'APPROVED') throw notSubmittable('This week is already approved');
-        if (await timesheets.findRunningBefore(user.id, week.end, tx))
-          throw notSubmittable('Stop the running timer before submitting this week');
-        return timesheets.submit(user.id, weekStart, clock(), tx);
-      });
+      let sheet: TimesheetWithPeople;
+      try {
+        sheet = await timesheets.transaction(async (tx) => {
+          await timesheets.lockUser(tx, user.id);
+          const existing = await timesheets.findByWeek(user.id, weekStart, tx);
+          if (existing?.status === 'SUBMITTED')
+            throw notSubmittable('This week is already submitted');
+          if (existing?.status === 'APPROVED')
+            throw notSubmittable('This week is already approved');
+          if (await timesheets.findRunningBefore(user.id, week.end, tx))
+            throw notSubmittable('Stop the running timer before submitting this week');
+          const grid = buildWeekGrid(
+            await timesheets.completedEntries([{ userId: user.id, ...week }], tx),
+            week,
+            null,
+          );
+          const parts = grid.projects.map((row) => ({
+            projectId: row.project.id,
+            seconds: row.totalSeconds,
+          }));
+          return timesheets.submit(
+            user.id,
+            weekStart,
+            clock(),
+            {
+              timezone: user.timezone,
+              periodStart: week.start,
+              periodEnd: week.end,
+              totalSeconds: grid.totalSeconds,
+              parts: parts.length > 0 ? parts : [{ projectId: null, seconds: 0 }],
+            },
+            tx,
+          );
+        });
+      } catch (err) {
+        if (pgErrorCode(err) === '23P01')
+          throw notSubmittable('This week overlaps a week that is already submitted or approved');
+        throw err;
+      }
 
       await audit.record(
         AuditAction.TIMESHEET_SUBMITTED,
@@ -247,8 +380,9 @@ export function createTimesheetsService({ timesheets, settings, audit, clock, ev
           targetId: sheet.id,
           after: {
             weekStart,
-            weekEnd: addDays(weekStart, 6),
-            totalSeconds: await weekTotal(user, weekStart),
+            weekEnd,
+            totalSeconds: sheet.totalSeconds,
+            projectIds: sheet.reviews.map((r) => r.projectId),
           },
         },
         context,

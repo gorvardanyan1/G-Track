@@ -1,6 +1,5 @@
 import {
   ErrorCode,
-  addDays,
   isLockedByAge,
   splitByLocalDay,
   todayInZone,
@@ -33,27 +32,35 @@ export function createEntryPolicy({ entries, settings, clock }: Deps) {
     return dates.length > 0 ? dates : [toLocalDate(start, zone)];
   }
 
-  /** Dates covered by the owner's submitted/approved timesheets (each covers 7 days). */
-  async function timesheetLockedDates(ownerId: string, dates: string[]): Promise<Set<string>> {
-    if (dates.length === 0) return new Set();
-    const sorted = [...dates].sort();
-    const first = sorted[0] ?? '';
-    const last = sorted.at(-1) ?? '';
-    const weekStarts = await entries.lockingWeekStarts(ownerId, addDays(first, -6), last);
-    return new Set(
-      dates.filter((date) => weekStarts.some((ws) => ws <= date && date <= addDays(ws, 6))),
-    );
+  /** The span an interval occupies; a running entry reaches to now, a point covers 1 ms. */
+  function spanOf(start: Date, end: Date | null) {
+    const until = (end ?? clock()).getTime();
+    return { start: start.getTime(), end: Math.max(until, start.getTime() + 1) };
   }
 
+  type Period = { periodStart: Date | null; periodEnd: Date | null };
+  const overlaps = (span: { start: number; end: number }, p: Period) =>
+    p.periodStart !== null &&
+    p.periodEnd !== null &&
+    p.periodStart.getTime() < span.end &&
+    p.periodEnd.getTime() > span.start;
+
   /**
-   * Why an interval can't change: older than the org's lock period, or inside a week whose
-   * timesheet is submitted or approved. Approved weeks stay read-only even if approval is later
-   * switched off, and a timesheet locks its own 7 days even if the week start day changes.
+   * Why an interval can't change: older than the org's lock period, or overlapping a submitted
+   * or approved week. Weeks lock by the UTC period fixed at submission, so changing one's
+   * timezone can't move time in or out of them; approved weeks stay read-only even if approval
+   * is later switched off or the week start day changes.
    */
-  function lockReason(dates: string[], today: string, policy: OrgPolicy, locked: Set<string>) {
+  function lockReason(
+    dates: string[],
+    span: { start: number; end: number },
+    today: string,
+    policy: OrgPolicy,
+    periods: Period[],
+  ) {
     if (dates.some((date) => isLockedByAge(date, today, policy.lockAfterDays)))
       return 'AGE' as const;
-    return dates.some((date) => locked.has(date)) ? ('TIMESHEET' as const) : null;
+    return periods.some((p) => overlaps(span, p)) ? ('TIMESHEET' as const) : null;
   }
 
   return {
@@ -66,12 +73,13 @@ export function createEntryPolicy({ entries, settings, clock }: Deps) {
       end: Date | null,
       policy?: OrgPolicy,
     ): Promise<void> {
-      const dates = datesOf(start, end, owner.timezone);
+      const span = spanOf(start, end);
       const reason = lockReason(
-        dates,
+        datesOf(start, end, owner.timezone),
+        span,
         todayInZone(owner.timezone, clock()),
         policy ?? (await settings.getPolicy()),
-        await timesheetLockedDates(owner.id, dates),
+        await entries.lockedPeriods(owner.id, new Date(span.start), new Date(span.end)),
       );
       if (reason === 'AGE') {
         throw new ConflictError('This period is locked and can no longer be changed', {
@@ -89,15 +97,20 @@ export function createEntryPolicy({ entries, settings, clock }: Deps) {
     async lockedEntryIds(owner: Owner, list: EntryWithRefs[]): Promise<Set<string>> {
       const policy = await settings.getPolicy();
       const today = todayInZone(owner.timezone, clock());
-      const datesById = new Map(
-        list.map((e) => [e.id, datesOf(e.startedAt, e.endedAt, owner.timezone)]),
-      );
-      const lockedDates = await timesheetLockedDates(owner.id, [
-        ...new Set([...datesById.values()].flat()),
-      ]);
+      const spans = new Map(list.map((e) => [e.id, spanOf(e.startedAt, e.endedAt)]));
+      const all = [...spans.values()];
+      const periods =
+        all.length === 0
+          ? []
+          : await entries.lockedPeriods(
+              owner.id,
+              new Date(Math.min(...all.map((x) => x.start))),
+              new Date(Math.max(...all.map((x) => x.end))),
+            );
       const locked = new Set<string>();
-      for (const [id, dates] of datesById) {
-        if (lockReason(dates, today, policy, lockedDates)) locked.add(id);
+      for (const entry of list) {
+        const dates = datesOf(entry.startedAt, entry.endedAt, owner.timezone);
+        if (lockReason(dates, spans.get(entry.id)!, today, policy, periods)) locked.add(entry.id);
       }
       return locked;
     },
