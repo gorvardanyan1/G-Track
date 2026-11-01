@@ -14,6 +14,8 @@ import StatusBadge from '../../components/ui/StatusBadge.vue';
 import { useWeek } from '../../composables/useWeek.ts';
 import { formatDay, formatDurationHm } from '../../lib/time.ts';
 import { useToastStore } from '../../stores/toasts.ts';
+import { submitState } from '../../lib/timesheet.ts';
+import ReviewParts from '../../components/tracking/ReviewParts.vue';
 
 const week = useWeek();
 const toasts = useToastStore();
@@ -26,11 +28,13 @@ const STATUS = {
   REJECTED: { label: 'Needs changes', tone: 'warning' },
 } as const;
 
-const canSubmit = computed(
-  () =>
-    sheet.value !== null &&
-    (sheet.value.status === 'DRAFT' || sheet.value.status === 'REJECTED') &&
-    sheet.value.weekStart <= week.today.value,
+const submittable = computed(() =>
+  sheet.value ? submitState(sheet.value, week.today.value) : 'locked',
+);
+const canSubmit = computed(() => submittable.value === 'ready');
+/** Parts are worth showing once someone besides the owner is involved. */
+const showParts = computed(
+  () => sheet.value !== null && sheet.value.status !== 'DRAFT' && sheet.value.reviews.length > 1,
 );
 const hm = (s: number) => (s > 0 ? formatDurationHm(s) : '');
 
@@ -77,6 +81,13 @@ async function submit(): Promise<void> {
         <BaseButton v-if="canSubmit" variant="primary" icon="send" @click="confirmOpen = true"
           >Submit week</BaseButton
         >
+        <span
+          v-else-if="submittable === 'not-over' && sheet"
+          class="text-[13px] text-faint"
+          title="Submitting locks the whole week, so it waits until the week is over."
+          >Submit after
+          {{ formatDay(sheet.weekEnd, { weekday: 'short', day: 'numeric', month: 'short' }) }}</span
+        >
       </div>
     </div>
 
@@ -94,6 +105,11 @@ async function submit(): Promise<void> {
         </div>
       </div>
     </Transition>
+
+    <section v-if="showParts && sheet" class="mb-5">
+      <h2 class="mb-2 text-sm font-semibold text-ink">Approval by project</h2>
+      <ReviewParts :reviews="sheet.reviews" />
+    </section>
 
     <div class="card overflow-hidden">
       <div v-if="week.loading.value && !sheet" class="space-y-3 p-5">

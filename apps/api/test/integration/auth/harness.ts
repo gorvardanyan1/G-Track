@@ -37,7 +37,7 @@ export function prisma(): PrismaClient {
 
 export async function resetDatabase(): Promise<void> {
   await prisma().$executeRaw`
-    TRUNCATE TABLE audit_logs, time_entries, timesheets, project_members, tasks, projects,
+    TRUNCATE TABLE audit_logs, time_entries, timesheet_reviews, timesheets, project_members, tasks, projects,
       clients, refresh_tokens, recovery_codes, password_resets, invites, org_settings, users
     RESTART IDENTITY CASCADE`;
 }

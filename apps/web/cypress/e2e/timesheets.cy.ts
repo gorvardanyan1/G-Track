@@ -100,11 +100,12 @@ describe('weekly timesheets', () => {
     });
   });
 
-  it('the PM sees only their projects by name and approves; the worker’s tab updates live', () => {
+  it('each PM approves their own project’s part; the week is approved when both have', () => {
     weekWithTime().then((w) => {
       cy.api('POST', '/timesheets/submit', { token: w.workerToken, body: { week: lastMonday() } })
         .its('status')
         .should('eq', 200);
+      // Petra manages Fleet Dashboard; Patient Portal is Marcus's.
       cy.login(w.pm);
       cy.visit('/approvals');
       cy.contains('tr', w.worker.name).contains('button', 'Review').click();
@@ -113,16 +114,43 @@ describe('weekly timesheets', () => {
         cy.contains('tr', 'Other projects').should('contain', '1:00');
         cy.contains('Patient Portal').should('not.exist');
         cy.contains('tfoot', '8:00');
-        cy.get('#review-comment').type('Thanks — all good.');
+        cy.get('[aria-label="Approval by project"] li').should('have.length', 2);
+        cy.contains('li', 'Fleet Dashboard').should('contain', 'yours to review');
+        cy.contains('li', 'Another project').should('contain', 'Waiting');
+        cy.get('#review-comment').type('Fleet part looks good.');
         cy.contains('button', 'Approve').click();
       });
       cy.get('[role=dialog]').should('not.exist');
-      cy.contains('[role=status]', 'Timesheet approved');
+      cy.contains('[role=status]', 'Your part is approved');
       cy.contains('tr', w.worker.name).should('not.exist');
-      cy.contains('[role=radio]', 'Approved').click();
-      cy.contains('tr', w.worker.name).should('contain', 'Approved');
+      // The week still waits for Marcus, so it stays locked.
+      sheetOf(w.workerToken).its('body.status').should('eq', 'SUBMITTED');
+      sheetOf(w.workerToken)
+        .its('body.id')
+        .then((id) =>
+          cy
+            .api('POST', `/timesheets/${String(id)}/approve`, { token: w.pmToken, body: {} })
+            .its('status')
+            .should('eq', 403),
+        );
 
+      cy.cloneUser('marcus.reed@tempo.test').then((marcus) => {
+        cy.clearAllCookies();
+        cy.login(marcus);
+        cy.visit('/approvals');
+        cy.contains('tr', w.worker.name).contains('button', 'Review').click();
+        cy.get('[role=dialog]').within(() => {
+          cy.contains('li', 'Patient Portal').should('contain', 'yours to review');
+          cy.contains('button', 'Approve').click();
+        });
+        cy.contains('[role=status]', 'Timesheet approved');
+      });
       sheetOf(w.workerToken).its('body.status').should('eq', 'APPROVED');
+      sheetOf(w.workerToken)
+        .its('body.reviews')
+        .should((reviews: { status: string }[]) =>
+          expect(reviews.map((r) => r.status)).to.deep.eq(['APPROVED', 'APPROVED']),
+        );
       cy.task<{ action: string }[]>('db:query', {
         text: `SELECT action FROM audit_logs WHERE actor_id = $1 ORDER BY created_at DESC LIMIT 1`,
         values: [w.pm.id],

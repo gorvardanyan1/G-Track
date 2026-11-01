@@ -59,20 +59,18 @@ export function createReportsService({ reports, settings, clock }: Deps) {
         ...(query.billable !== undefined && { billable: query.billable }),
       });
 
-      const rates = new Map<string, number>();
-      if (showAmounts) {
-        for (const r of await reports.rates([...new Set(rows.map((e) => e.projectId))])) {
-          if (r.hourlyRate)
-            rates.set(`${r.projectId}:${r.userId}`, r.hourlyRate.mul(100).toNumber());
-        }
-      }
+      // Each entry carries the rate from when it was tracked: later rate changes don't rewrite
+      // past billing. Amounts are for admins and PMs only.
       const entries: ReportEntry[] = rows.flatMap((row) =>
         row.endedAt
           ? [
               {
                 ...row,
                 endedAt: row.endedAt,
-                rateCents: rates.get(`${row.projectId}:${row.userId}`) ?? null,
+                rateCents:
+                  showAmounts && row.hourlyRate !== null
+                    ? row.hourlyRate.mul(100).toNumber()
+                    : null,
               },
             ]
           : [],

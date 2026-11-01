@@ -4,6 +4,8 @@ import { paginationQuerySchema, queryBoolean } from '../common/pagination.ts';
 
 export const TIMESHEET_STATUSES = ['DRAFT', 'SUBMITTED', 'APPROVED', 'REJECTED'] as const;
 export type TimesheetStatus = (typeof TIMESHEET_STATUSES)[number];
+export const TIMESHEET_REVIEW_STATUSES = ['PENDING', 'APPROVED', 'REJECTED'] as const;
+export type TimesheetReviewStatus = (typeof TIMESHEET_REVIEW_STATUSES)[number];
 
 /** Any date inside the week; the api normalizes it to the week start. */
 export const timesheetWeekQuerySchema = z.object({ week: localDateSchema });
@@ -58,8 +60,27 @@ export const timesheetResponseSchema = timesheetSummarySchema.extend({
   /** Time on projects the viewer can't see (a PM reviewing a worker on several projects). */
   otherSeconds: z.array(z.number().int()).length(7),
   dayTotals: z.array(z.number().int()).length(7),
-  /** Whether the viewer may approve/reject it right now. */
+  /** Whether the viewer has a part of this week to approve/return right now. */
   canReview: z.boolean(),
+  /**
+   * The week's parts, one per project with time (or one whole-week part for a week without
+   * time). Each project's PM decides its part; the week is approved when every part is.
+   */
+  reviews: z.array(
+    z.object({
+      /** Null for the whole-week part, or for a project the viewer can't see (`visible`). */
+      project: z.object({ id: z.uuid(), name: z.string(), color: z.string() }).nullable(),
+      /** False: another PM's project, shown without its name or reviewer. */
+      visible: z.boolean(),
+      status: z.enum(TIMESHEET_REVIEW_STATUSES),
+      seconds: z.number().int(),
+      reviewer: person.nullable(),
+      reviewedAt: z.iso.datetime().nullable(),
+      comment: z.string().nullable(),
+      /** The viewer decides this part. */
+      canReview: z.boolean(),
+    }),
+  ),
 });
 
 export type TimesheetWeekQuery = z.infer<typeof timesheetWeekQuerySchema>;

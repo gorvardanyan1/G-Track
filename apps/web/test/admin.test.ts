@@ -119,3 +119,16 @@ describe('optional number fields', () => {
     expect(optionalNumber('abc')).toBeNaN();
   });
 });
+
+describe('when a week can be submitted', () => {
+  it('only once it is over, from draft or after being returned', async () => {
+    const { submitState } = await import('../src/lib/timesheet.ts');
+    const week = { weekEnd: '2026-11-01' };
+    expect(submitState({ ...week, status: 'DRAFT' }, '2026-10-31')).toBe('not-over');
+    expect(submitState({ ...week, status: 'DRAFT' }, '2026-11-01')).toBe('not-over'); // last day
+    expect(submitState({ ...week, status: 'DRAFT' }, '2026-11-02')).toBe('ready');
+    expect(submitState({ ...week, status: 'REJECTED' }, '2026-11-09')).toBe('ready');
+    expect(submitState({ ...week, status: 'SUBMITTED' }, '2026-11-09')).toBe('locked');
+    expect(submitState({ ...week, status: 'APPROVED' }, '2026-11-09')).toBe('locked');
+  });
+});

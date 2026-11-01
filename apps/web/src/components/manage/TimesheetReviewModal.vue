@@ -12,6 +12,7 @@ import SkeletonBlock from '../ui/SkeletonBlock.vue';
 import StatusBadge from '../ui/StatusBadge.vue';
 import UserAvatar from '../ui/UserAvatar.vue';
 import { TIMESHEET_STATUS } from './timesheet-status.ts';
+import ReviewParts from '../tracking/ReviewParts.vue';
 
 const props = defineProps<{ timesheetId: string | null }>();
 const emit = defineEmits<{ close: []; reviewed: [sheet: TimesheetResponse] }>();
@@ -56,9 +57,15 @@ async function review(action: 'approve' | 'reject'): Promise<void> {
       action === 'approve'
         ? await timesheetsApi.approve(sheet.value.id, comment.value.trim() || undefined)
         : await timesheetsApi.reject(sheet.value.id, comment.value.trim());
+    const week = `${result.user.name} · week of ${formatDay(result.weekStart, { day: 'numeric', month: 'short' })}`;
+    // With several projects, the week is approved once every project's manager approved.
     toasts.success(
-      action === 'approve' ? 'Timesheet approved' : 'Timesheet returned',
-      `${result.user.name} · week of ${formatDay(result.weekStart, { day: 'numeric', month: 'short' })}`,
+      action === 'reject'
+        ? 'Timesheet returned'
+        : result.status === 'APPROVED'
+          ? 'Timesheet approved'
+          : 'Your part is approved',
+      result.status === 'SUBMITTED' ? `${week} · waiting for the other project managers` : week,
     );
     emit('reviewed', result);
   } catch (e) {
@@ -158,6 +165,14 @@ const title = computed(() =>
         <span class="font-medium text-ink">{{ sheet.reviewer?.name ?? 'Reviewer' }}:</span>
         {{ sheet.comment }}
       </p>
+      <section v-if="sheet.reviews.length > 1" class="mt-5">
+        <h3 class="mb-2 text-[13px] font-medium text-ink">Approval by project</h3>
+        <ReviewParts :reviews="sheet.reviews" />
+        <p v-if="sheet.canReview" class="mt-2 text-xs text-faint">
+          You approve or return the parts marked “yours to review”. The week is approved when every
+          project’s manager has approved their part; returning any part returns the whole week.
+        </p>
+      </section>
       <FormField
         v-if="sheet.canReview"
         label="Comment"
